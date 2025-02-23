@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:flutter/services.dart' show rootBundle;
-import 'package:intl/intl.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter/services.dart';
+import 'dart:io';
+import 'dart:math';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_remix/flutter_remix.dart';
 import 'package:shimmer/shimmer.dart';
-import 'package:flutter_remix/flutter_remix.dart'; // Import flutter_remix
+import 'package:intl/intl.dart';
 import 'word_detail_page.dart';
 
 void main() {
@@ -18,11 +22,8 @@ class DictionaryApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Dictionary App',
       theme: ThemeData(
-        primarySwatch: Colors.deepPurple, // Changed primary color
-        textTheme: GoogleFonts.poppinsTextTheme(
-          Theme.of(context).textTheme,
-        ),
-        scaffoldBackgroundColor: Color(0xFFF8F8FF), // Light background
+        primarySwatch: Colors.deepPurple,
+        textTheme: GoogleFonts.poppinsTextTheme(),
       ),
       home: DictionaryHomePage(),
     );
@@ -35,186 +36,145 @@ class DictionaryHomePage extends StatefulWidget {
 }
 
 class _DictionaryHomePageState extends State<DictionaryHomePage> {
-  TextEditingController _controller = TextEditingController();
-  List<Map<String, String>> searchHistory = [];
-  Map<String, dynamic> dictionaryData = {};
-  bool isLoading = false;
+  late Database _database;
+  TextEditingController _searchController = TextEditingController();
+  List<Map<String, String>> recentWords = [];
 
   @override
   void initState() {
     super.initState();
-    loadDictionaryData();
+    _initializeDatabase();
   }
 
-  Future<void> loadDictionaryData() async {
-    String data = await rootBundle.loadString('assets/mini_dictionary.json');
-    setState(() {
-      dictionaryData = json.decode(data);
-    });
+  Future<void> _initializeDatabase() async {
+    Directory documentsDirectory = await getApplicationDocumentsDirectory();
+    String dbPath = '${documentsDirectory.path}/mini_dictionary.db';
+
+    if (!await File(dbPath).exists()) {
+      ByteData data = await rootBundle.load('assets/mini_dictionary.db');
+      List<int> bytes = data.buffer.asUint8List();
+      await File(dbPath).writeAsBytes(bytes);
+    }
+
+    _database = await openDatabase(dbPath);
   }
 
-  Future<void> searchWord(String word, String source) async {
-    setState(() => isLoading = true);
-    await Future.delayed(Duration(milliseconds: 500));
+  Future<Map<String, dynamic>?> _searchWord(String word) async {
+    final List<Map<String, dynamic>> results = await _database.query(
+      'dictionary',
+      where: 'word = ?',
+      whereArgs: [word],
+    );
+    return results.isNotEmpty ? results.first : null;
+  }
 
-    if (dictionaryData.containsKey(word.toLowerCase())) {
+  Future<Map<String, dynamic>?> _getRandomWord() async {
+    final List<Map<String, dynamic>> results = await _database.query('dictionary');
+    return results.isNotEmpty ? results[Random().nextInt(results.length)] : null;
+  }
+
+  void _search() async {
+    final word = _searchController.text.trim();
+    if (word.isNotEmpty) {
+      final result = await _searchWord(word);
+      if (result != null) {
+        setState(() {
+          recentWords.insert(0, {
+            'word': word,
+            'type': 'Searched',
+            'timestamp': DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.now()),
+          });
+        });
+        Navigator.push(context, MaterialPageRoute(builder: (context) => WordDetailPage(wordData: result)));
+      } else {
+        _showError('Word not found');
+      }
+    }
+  }
+
+  void _showRandomWord() async {
+    final result = await _getRandomWord();
+    if (result != null) {
       setState(() {
-        searchHistory.insert(0, {
-          "word": word,
-          "source": source,
-          "time": DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+        recentWords.insert(0, {
+          'word': result['word'],
+          'type': 'Random',
+          'timestamp': DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.now()),
         });
       });
-
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => WordDetailPage(
-              word: word, data: dictionaryData[word.toLowerCase()]),
-        ),
-      );
-    } else {
-      setState(() => isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Word not found"),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
+      Navigator.push(context, MaterialPageRoute(builder: (context) => WordDetailPage(wordData: result)));
     }
-    setState(() => isLoading = false);
   }
 
-  Future<void> fetchRandomWord() async {
-    if (dictionaryData.isNotEmpty) {
-      List<String> words = dictionaryData.keys.toList();
-      String randomWord = (words..shuffle()).first;
-      searchWord(randomWord, "random_button");
-    }
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.deepPurple.shade50,
       appBar: AppBar(
-        leading: IconButton(
-          icon: Icon(FlutterRemix.arrow_left_line, color: Colors.white),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: Text('Dictionary App', style: TextStyle(color: Colors.white)),
-        backgroundColor: Color(0xFF673AB7), // Deep purple app bar
-        elevation: 0,
+        title: Text('Dictionary App', style: GoogleFonts.poppins(fontWeight: FontWeight.bold)),
+        centerTitle: true,
+        backgroundColor: Colors.deepPurpleAccent,
       ),
       body: Padding(
-        padding: EdgeInsets.all(16.0),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            // Search Bar
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.grey.withOpacity(0.3),
-                    spreadRadius: 1,
-                    blurRadius: 5,
-                    offset: Offset(0, 2),
-                  ),
-                ],
+            TextField(
+              controller: _searchController,
+              // style: TextStyle(color: Colors.white70),
+              decoration: InputDecoration(
+                labelText: 'Search Word',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(FlutterRemix.search_2_fill, color: Colors.deepPurple),
               ),
-              child: TextField(
-                controller: _controller,
-                decoration: InputDecoration(
-                  hintText: "Enter a word",
-                  hintStyle: TextStyle(color: Colors.grey[500]),
-                  prefixIcon: Icon(FlutterRemix.search_line,
-                      color: Colors.grey[500]), // Remix icon
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.all(16),
-                ),
-              ),
-            ),
-            SizedBox(height: 20),
-            // Buttons
+            ).animate().fade(duration: 500.ms).scale(delay: 200.ms),
+            SizedBox(height: 10),
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () =>
-                        searchWord(_controller.text.trim(), "search_bar"),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Color(0xFF673AB7), // Deep purple
-                      padding: EdgeInsets.symmetric(vertical: 15),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    child: Text("Search", style: TextStyle(fontSize: 16)),
+                ElevatedButton.icon(
+                  onPressed: _search,
+                  icon: Icon(FlutterRemix.search_eye_fill,
+                    color: Colors.white,),
+                  label: Text('Search'),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent,
                   ),
                 ),
-                SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: fetchRandomWord,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Color(0xFF4CAF50), // Green
-                      padding: EdgeInsets.symmetric(vertical: 15),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    child: Text("Random Word", style: TextStyle(fontSize: 16)),
-                  ),
+                ElevatedButton.icon(
+                  onPressed: _showRandomWord,
+                  icon: Icon(FlutterRemix.shuffle_fill,
+                    color: Colors.white),
+                  label: Text('Random Word'),
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.purple),
                 ),
               ],
-            ),
+            ).animate().slideX(duration: 500.ms),
             SizedBox(height: 20),
-            // Loading Indicator
-            if (isLoading)
-              Shimmer.fromColors(
-                baseColor: Colors.grey[300]!,
-                highlightColor: Colors.grey[100]!,
-                child: Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ),
-            // Search History
+            Text('Recent Searches:', style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.bold)),
             Expanded(
-              child: ListView(
-                children: [
-                  Divider(color: Colors.grey[300]),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8.0),
-                    child: Text("Search History",
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
-                  ),
-                  ...searchHistory.map(
-                        (entry) => Card(
-                      elevation: 2,
-                      margin: EdgeInsets.symmetric(vertical: 5),
-                      child: ListTile(
-                        title: Text(entry["word"]!,
-                            style: TextStyle(fontWeight: FontWeight.w500)),
-                        subtitle: Text(
-                            "Source: ${entry["source"]}, Time: ${entry["time"]}",
-                            style: TextStyle(fontSize: 12)),
-                        onTap: () => searchWord(entry["word"]!, "history"),
-                        leading: Icon(FlutterRemix.history_line,
-                            color: Color(0xFF673AB7)), // Remix icon
-                        trailing: Icon(FlutterRemix.arrow_right_s_line,
-                            color: Colors.grey[500], size: 16), // Remix icon
-                      ),
+              child: ListView.builder(
+                itemCount: recentWords.length,
+                itemBuilder: (context, index) {
+                  final item = recentWords[index];
+                  return Card(
+                    color: item['type'] == 'Searched' ? Colors.deepPurple.shade100 : Colors.orange.shade100,
+                    child: ListTile(
+                      title: Text(item['word']!, style: TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text('${item['type']} • ${item['timestamp']}'),
+                      leading: Icon(item['type'] == 'Searched' ? FlutterRemix.search_fill : FlutterRemix.shuffle_fill, color: Colors.deepPurple),
+                      onTap: () async {
+                        final result = await _searchWord(item['word']!);
+                        if (result != null) {
+                          Navigator.push(context, MaterialPageRoute(builder: (context) => WordDetailPage(wordData: result)));
+                        }
+                      },
                     ),
-                  ),
-                ],
+                  );
+                },
               ),
             ),
           ],
